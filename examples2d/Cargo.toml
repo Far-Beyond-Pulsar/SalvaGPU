@@ -20,6 +20,8 @@ bevy = "0.15"
 pollster = "0.3"
 instant = "0.1"
 wgpu = { version = "23", optional = true }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
 
 [dependencies.salva2d]
 path = "../build/salva2d"
@@ -38,4 +40,9 @@ path = "./all_examples2.rs"
 [[bin]]
 name = "gpu_benchmark"
 path = "./gpu_benchmark.rs"
+required-features = []
+
+[[bin]]
+name = "parity_test"
+path = "./parity_test.rs"
 required-features = []

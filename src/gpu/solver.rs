@@ -362,32 +362,77 @@ impl GpuFluidSolver {
         let _ = self.context.queue.submit(Some(encoder.finish()));
     }
     
-    /// Reads particle data back from GPU (expensive - use sparingly!)
+    /// Read particle data back from GPU for comparison/debugging
     pub async fn read_particles(&self) -> Result<Vec<GpuParticle>, String> {
-        use crate::gpu::buffer::ReadbackBuffer;
+        // Ensure all GPU work is complete
+        let _ = self.context.device.poll(wgpu::Maintain::Wait);
         
-        let readback = ReadbackBuffer::new(
-            &self.context.device,
-            self.num_particles,
-            "Particle Readback",
-        );
-        
-        let mut encoder = self.context.device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("Readback Encoder"),
+        // Create staging buffer
+        let staging_buffer = self.context.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Staging Buffer"),
+            size: (self.num_particles * size_of::<GpuParticle>()) as u64,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
         
+        // Copy from GPU to staging
+        let mut encoder = self.context.device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("Readback"),
+        });
         encoder.copy_buffer_to_buffer(
             self.particles_buffer.buffer(),
             0,
-            readback.buffer(),
+            &staging_buffer,
             0,
             (self.num_particles * size_of::<GpuParticle>()) as u64,
         );
-        
         let _ = self.context.queue.submit(Some(encoder.finish()));
         
-        readback.read().await
+        // Map and read
+        let buffer_slice = staging_buffer.slice(..);
+        let (tx, rx) = futures::channel::oneshot::channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            tx.send(result).unwrap();
+        });
+        
+        let _ = self.context.device.poll(wgpu::Maintain::Wait);
+        rx.await.unwrap().map_err(|e| format!("Failed to map buffer: {:?}", e))?;
+        
+        let data = buffer_slice.get_mapped_range();
+        let particles: Vec<GpuParticle> = bytemuck::cast_slice(&data).to_vec();
+        
+        drop(data);
+        staging_buffer.unmap();
+        
+        Ok(particles)
     }
+    
+    // /// Reads particle data back from GPU (expensive - use sparingly!)
+    // pub async fn read_particles(&self) -> Result<Vec<GpuParticle>, String> {
+    //     use crate::gpu::buffer::ReadbackBuffer;
+        
+    //     let readback = ReadbackBuffer::new(
+    //         &self.context.device,
+    //         self.num_particles,
+    //         "Particle Readback",
+    //     );
+        
+    //     let mut encoder = self.context.device.create_command_encoder(&CommandEncoderDescriptor {
+    //         label: Some("Readback Encoder"),
+    //     });
+        
+    //     encoder.copy_buffer_to_buffer(
+    //         self.particles_buffer.buffer(),
+    //         0,
+    //         readback.buffer(),
+    //         0,
+    //         (self.num_particles * size_of::<GpuParticle>()) as u64,
+    //     );
+        
+    //     let _ = self.context.queue.submit(Some(encoder.finish()));
+        
+    //     readback.read().await
+    // }
     
     /// Returns the number of particles in the simulation
     pub fn num_particles(&self) -> usize {
