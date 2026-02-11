@@ -14,8 +14,10 @@ pub struct GpuParticle2D {
     pub velocity: [f32; 4],
     /// Force accumulator (x, y) and padding
     pub force: [f32; 4],
-    /// Density, pressure, mass, padding
-    pub density_pressure_mass: [f32; 4],
+    /// Density, pressure, mass, alpha (DFSPH stiffness)
+    pub density_pressure_mass_alpha: [f32; 4],
+    /// Velocity change for divergence-free solver (x, y) and padding
+    pub velocity_change: [f32; 4],
 }
 
 /// GPU-compatible 3D particle data (Structure of Arrays layout)
@@ -29,8 +31,10 @@ pub struct GpuParticle3D {
     pub velocity: [f32; 4],
     /// Force accumulator (x, y, z, padding)
     pub force: [f32; 4],
-    /// Density, pressure, mass, padding
-    pub density_pressure_mass: [f32; 4],
+    /// Density, pressure, mass, alpha (DFSPH stiffness)
+    pub density_pressure_mass_alpha: [f32; 4],
+    /// Velocity change for divergence-free solver (x, y, z, padding)
+    pub velocity_change: [f32; 4],
 }
 
 #[cfg(feature = "dim2")]
@@ -70,8 +74,24 @@ pub struct SimulationParams {
     pub surface_tension: f32,
     /// Pressure stiffness
     pub pressure_stiffness: f32,
+    
+    /// Grid size X
+    pub grid_size_x: u32,
+    /// Grid size Y
+    pub grid_size_y: u32,
+    /// Grid size Z
+    pub grid_size_z: u32,
+    
+    /// DFSPH maximum density error (0.05 = 5%)
+    pub max_density_error: f32,
+    /// DFSPH maximum divergence error (0.1 = 10%)
+    pub max_divergence_error: f32,
+    /// DFSPH max pressure iterations
+    pub max_pressure_iter: u32,
+    /// DFSPH max divergence iterations
+    pub max_divergence_iter: u32,
     /// Padding
-    pub _padding: f32,
+    pub _padding: [u32; 2],
 }
 
 impl Default for SimulationParams {
@@ -89,7 +109,14 @@ impl Default for SimulationParams {
             viscosity: 0.01,
             surface_tension: 0.01,
             pressure_stiffness: 1000.0,
-            _padding: 0.0,
+            grid_size_x: 64,
+            grid_size_y: 64,
+            grid_size_z: 64,
+            max_density_error: 0.05,
+            max_divergence_error: 0.1,
+            max_pressure_iter: 50,
+            max_divergence_iter: 50,
+            _padding: [0, 0],
         }
     }
 }

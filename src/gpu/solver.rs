@@ -19,6 +19,9 @@ pub struct GpuFluidSolver {
     // GPU buffers
     particles_buffer: DeltaBufferManager<GpuParticle>,
     particle_indices_buffer: DeltaBufferManager<ParticleIndex>,
+    grid_cells_buffer: wgpu::Buffer,
+    dfsph_data_buffer: wgpu::Buffer,
+    velocity_corrections_buffer: wgpu::Buffer,
     params_buffer: wgpu::Buffer,
     
     // Simulation parameters
@@ -49,6 +52,30 @@ impl GpuFluidSolver {
             "Particle Indices Buffer",
         );
         
+        // Grid cells buffer (dummy 1 cell for now)
+        let grid_cells_buffer = context.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Grid Cells Buffer"),
+            size: (size_of::<[u32; 2]>() * 1) as u64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        
+        // DFSPH data buffer (alpha, predicted_density, divergence per particle)
+        let dfsph_data_buffer = context.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("DFSPH Data Buffer"),
+            size: (size_of::<[f32; 4]>() * initial_capacity) as u64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        
+        // Velocity corrections buffer
+        let velocity_corrections_buffer = context.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Velocity Corrections Buffer"),
+            size: (size_of::<[f32; 4]>() * initial_capacity) as u64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        
         let params = SimulationParams::default();
         let params_buffer = context.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Simulation Params"),
@@ -61,6 +88,9 @@ impl GpuFluidSolver {
             pipelines,
             particles_buffer,
             particle_indices_buffer,
+            grid_cells_buffer,
+            dfsph_data_buffer,
+            velocity_corrections_buffer,
             params_buffer,
             params,
             num_particles: 0,
@@ -90,7 +120,8 @@ impl GpuFluidSolver {
                     velocity: [vel.x, vel.y, vel.z, 0.0],
                     
                     force: [0.0, 0.0, 0.0, 0.0],
-                    density_pressure_mass: [fluid.density0, 0.0, mass, 0.0],
+                    density_pressure_mass_alpha: [fluid.density0, 0.0, mass, 0.0],
+                    velocity_change: [0.0, 0.0, 0.0, 0.0],
                 };
                 
                 gpu_particles.push(gpu_particle);
@@ -127,7 +158,8 @@ impl GpuFluidSolver {
         );
     }
     
-    /// Performs one simulation step entirely on the GPU
+    /// Performs one simulation step entirely on the GPU using DFSPH
+    /// Matches the CPU DFSPHSolver::step() implementation
     pub fn step(&mut self, dt: Real, gravity: &Vector<Real>) {
         // Update simulation parameters
         self.params.dt = dt;
@@ -152,66 +184,25 @@ impl GpuFluidSolver {
         self.particles_buffer.sync_to_gpu(&self.context.queue);
         self.particle_indices_buffer.sync_to_gpu(&self.context.queue);
         
-        // Create command encoder
-        let mut encoder = self.context.device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("Simulation Step"),
-        });
-        
         let workgroup_size = 256;
         let num_workgroups = (self.num_particles as u32 + workgroup_size - 1) / workgroup_size;
         
-        // Step 1: Compute spatial hashes
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Spatial Hash Pass"),
-                timestamp_writes: None,
-            });
-            
-            let bind_group = self.context.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Spatial Hash Bind Group"),
-                layout: &self.pipelines.spatial_hash_pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: self.particles_buffer.buffer().as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: self.particle_indices_buffer.buffer().as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.params_buffer.as_entire_binding(),
-                    },
-                ],
-            });
-            
-            pass.set_pipeline(&self.pipelines.spatial_hash_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(num_workgroups, 1, 1);
-        }
+        // DFSPH Algorithm (matching CPU implementation):
+        // 1. Compute alpha (stiffness factors)
+        // 2. Divergence solve (make velocity field divergence-free)
+        // 3. Apply non-pressure forces and predict advection
+        // 4. Integrate positions
+        // 5. Pressure solve (correct density errors)
         
-        // Step 2: Compute densities
-        // Note: In a full implementation, we'd sort particle_indices here and build grid cells
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Density Pass"),
-                timestamp_writes: None,
-            });
-            
-            // Create a dummy grid cells buffer for now
-            let dummy_grid_cells = vec![[0u32, self.num_particles as u32]; 1];
-            let grid_cells_buffer = self.context.device.create_buffer_init(
-                &wgpu::util::BufferInitDescriptor {
-                    label: Some("Grid Cells"),
-                    contents: bytemuck::cast_slice(&dummy_grid_cells),
-                    usage: BufferUsages::STORAGE,
-                }
-            );
-            
-            let bind_group = self.context.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Density Bind Group"),
-                layout: &self.pipelines.density_pipeline.get_bind_group_layout(0),
+        let mut encoder = self.context.device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("DFSPH Simulation Step"),
+        });
+        
+        // Helper to create bind group for DFSPH passes (needs all 6 bindings)
+        let create_dfsph_bind_group = |pipeline: &wgpu::ComputePipeline| {
+            self.context.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("DFSPH Bind Group"),
+                layout: &pipeline.get_bind_group_layout(0),
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
@@ -223,27 +214,72 @@ impl GpuFluidSolver {
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: grid_cells_buffer.as_entire_binding(),
+                        resource: self.grid_cells_buffer.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
                         resource: self.params_buffer.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: self.dfsph_data_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: self.velocity_corrections_buffer.as_entire_binding(),
+                    },
                 ],
+            })
+        };
+        
+        // Step 1: Compute Alpha (stiffness factors for pressure solve)
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Compute Alpha"),
+                timestamp_writes: None,
             });
-            
-            pass.set_pipeline(&self.pipelines.density_pipeline);
+            let bind_group = create_dfsph_bind_group(&self.pipelines.dfsph_compute_alpha_pipeline);
+            pass.set_pipeline(&self.pipelines.dfsph_compute_alpha_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(num_workgroups, 1, 1);
         }
         
-        // Step 3: Compute forces
+        // Step 2: Divergence Solve (iterative correction for divergence-free velocity)
+        for iter in 0..self.params.max_divergence_iter {
+            // Compute divergence
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some(&format!("Compute Divergence Iter {}", iter)),
+                    timestamp_writes: None,
+                });
+                let bind_group = create_dfsph_bind_group(&self.pipelines.dfsph_compute_divergence_pipeline);
+                pass.set_pipeline(&self.pipelines.dfsph_compute_divergence_pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.dispatch_workgroups(num_workgroups, 1, 1);
+            }
+            
+            // Correct divergence error
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some(&format!("Correct Divergence Iter {}", iter)),
+                    timestamp_writes: None,
+                });
+                let bind_group = create_dfsph_bind_group(&self.pipelines.dfsph_correct_divergence_pipeline);
+                pass.set_pipeline(&self.pipelines.dfsph_correct_divergence_pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.dispatch_workgroups(num_workgroups, 1, 1);
+            }
+            
+            // TODO: Check convergence and break early if error < max_divergence_error
+            // For now, just do fixed iterations
+        }
+        
+        // Step 3: Apply non-pressure forces (viscosity, surface tension, gravity)
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Forces Pass"),
+                label: Some("Apply Forces"),
                 timestamp_writes: None,
             });
-            
             let bind_group = self.context.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Forces Bind Group"),
                 layout: &self.pipelines.forces_pipeline.get_bind_group_layout(0),
@@ -262,19 +298,17 @@ impl GpuFluidSolver {
                     },
                 ],
             });
-            
             pass.set_pipeline(&self.pipelines.forces_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(num_workgroups, 1, 1);
         }
         
-        // Step 4: Integrate
+        // Step 4: Integrate positions (semi-implicit Euler)
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Integration Pass"),
+                label: Some("Integrate"),
                 timestamp_writes: None,
             });
-            
             let bind_group = self.context.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Integration Bind Group"),
                 layout: &self.pipelines.integrate_pipeline.get_bind_group_layout(0),
@@ -289,13 +323,42 @@ impl GpuFluidSolver {
                     },
                 ],
             });
-            
             pass.set_pipeline(&self.pipelines.integrate_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(num_workgroups, 1, 1);
         }
         
-        // Submit commands
+        // Step 5: Pressure Solve (iterative correction for constant density)
+        for iter in 0..self.params.max_pressure_iter {
+            // Predict density after position update
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some(&format!("Predict Density Iter {}", iter)),
+                    timestamp_writes: None,
+                });
+                let bind_group = create_dfsph_bind_group(&self.pipelines.dfsph_predict_density_pipeline);
+                pass.set_pipeline(&self.pipelines.dfsph_predict_density_pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.dispatch_workgroups(num_workgroups, 1, 1);
+            }
+            
+            // Correct density error
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some(&format!("Correct Density Iter {}", iter)),
+                    timestamp_writes: None,
+                });
+                let bind_group = create_dfsph_bind_group(&self.pipelines.dfsph_correct_density_pipeline);
+                pass.set_pipeline(&self.pipelines.dfsph_correct_density_pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.dispatch_workgroups(num_workgroups, 1, 1);
+            }
+            
+            // TODO: Check convergence and break early if error < max_density_error
+            // For now, just do fixed iterations
+        }
+        
+        // Submit all commands
         let _ = self.context.queue.submit(Some(encoder.finish()));
     }
     

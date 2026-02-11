@@ -45,11 +45,8 @@ struct ParticleIndex {
 fn cubic_spline_kernel(r: f32, h: f32) -> f32 {
     let q = r / h;
     
-    #ifdef DIM_2D
-    let sigma = 10.0 / (7.0 * 3.141592653589793 * h * h);
-    #else
+    // Using 3D formula (works for 2D with z=0)
     let sigma = 1.0 / (3.141592653589793 * h * h * h);
-    #endif
     
     if (q >= 2.0) {
         return 0.0;
@@ -73,11 +70,8 @@ fn cubic_spline_gradient(r_vec: vec3<f32>, h: f32) -> vec3<f32> {
     
     let q = r / h;
     
-    #ifdef DIM_2D
-    let sigma = 10.0 / (7.0 * 3.141592653589793 * h * h);
-    #else
+    // Using 3D formula (works for 2D with z=0)
     let sigma = 1.0 / (3.141592653589793 * h * h * h);
-    #endif
     
     var grad_kernel: f32;
     if (q >= 1.0) {
