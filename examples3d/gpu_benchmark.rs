@@ -1,5 +1,7 @@
 use instant::Instant;
 use nalgebra::{Point3, Vector3};
+use salva3d::kernel::CubicSplineKernel;
+use salva3d::object::interaction_groups::InteractionGroups;
 use salva3d::object::{Fluid, FluidHandle};
 use salva3d::solver::DFSPHSolver;
 use salva3d::LiquidWorld;
@@ -92,7 +94,7 @@ fn create_fluid(particle_count: usize, particle_radius: f32) -> Fluid {
         }
     }
     
-    let mut fluid = Fluid::new(positions, particle_radius, 1.0);
+    let mut fluid = Fluid::new(positions, particle_radius, 1.0, InteractionGroups::all());
     fluid.velocities = velocities;
     fluid
 }
@@ -117,8 +119,8 @@ fn benchmark_cpu(
         std::io::Write::flush(&mut std::io::stdout()).ok();
         
         // Create world and fluid
-        let mut world = LiquidWorld::new(
-            DFSPHSolver::new(),
+        let mut world: LiquidWorld = LiquidWorld::new(
+            DFSPHSolver::<CubicSplineKernel, CubicSplineKernel>::new(),
             particle_radius,
             smoothing_factor,
         );
