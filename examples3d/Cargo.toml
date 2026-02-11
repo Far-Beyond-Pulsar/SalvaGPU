@@ -7,6 +7,7 @@ edition = "2018"
 [features]
 default = []
 parallel = ["rapier_testbed3d/parallel", "salva3d/parallel"]
+gpu-acceleration = ["salva3d/gpu-acceleration", "wgpu"]
 
 [dependencies]
 num-traits = "0.2"
@@ -18,6 +19,7 @@ parry3d = "0.18"
 bevy = "0.15"
 pollster = "0.3"
 instant = "0.1"
+wgpu = { version = "23", optional = true }
 
 [dependencies.salva3d]
 path = "../build/salva3d"

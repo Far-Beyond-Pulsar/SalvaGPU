@@ -1,14 +1,12 @@
 use instant::Instant;
 use nalgebra::{Point2, Vector2};
+use salva2d::gpu::GpuFluidSolver;
 use salva2d::kernel::CubicSplineKernel;
 use salva2d::object::interaction_groups::InteractionGroups;
 use salva2d::object::{Fluid, FluidHandle};
 use salva2d::solver::DFSPHSolver;
 use salva2d::LiquidWorld;
 use std::time::Duration;
-
-#[cfg(feature = "gpu-acceleration")]
-use salva2d::gpu::GpuFluidSolver;
 
 /// Benchmark configuration
 struct BenchmarkConfig {
@@ -23,10 +21,9 @@ struct BenchmarkResult {
     particle_count: usize,
     cpu_avg_time: Duration,
     cpu_total_time: Duration,
-    #[cfg(feature = "gpu-acceleration")]
     gpu_avg_time: Duration,
-    #[cfg(feature = "gpu-acceleration")]
     gpu_total_time: Duration,
+    gpu_available: bool,
 }
 
 impl BenchmarkResult {
@@ -40,8 +37,7 @@ impl BenchmarkResult {
         println!("    Total time: {:.2} s", self.cpu_total_time.as_secs_f32());
         println!("    FPS: {:.1}", 1.0 / self.cpu_avg_time.as_secs_f32());
         
-        #[cfg(feature = "gpu-acceleration")]
-        {
+        if self.gpu_available {
             println!("\n  GPU Performance:");
             println!("    Average frame time: {:.2} ms", self.gpu_avg_time.as_secs_f32() * 1000.0);
             println!("    Total time: {:.2} s", self.gpu_total_time.as_secs_f32());
@@ -55,6 +51,9 @@ impl BenchmarkResult {
             } else {
                 println!("  CPU is {:.1}% faster", (1.0 / speedup - 1.0) * 100.0);
             }
+        } else {
+            println!("\n  GPU: NOT AVAILABLE");
+            println!("    Build with --features gpu-acceleration to enable");
         }
         
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
@@ -140,7 +139,6 @@ fn benchmark_cpu(
 }
 
 /// Runs GPU benchmark
-#[cfg(feature = "gpu-acceleration")]
 async fn benchmark_gpu(
     particle_count: usize,
     num_frames: usize,
@@ -207,12 +205,6 @@ async fn run_benchmarks(config: BenchmarkConfig) {
     println!("  Time step: {} s", config.dt);
     println!("  Particle counts: {:?}", config.particle_counts);
     
-    #[cfg(not(feature = "gpu-acceleration"))]
-    {
-        println!("\n⚠ WARNING: GPU acceleration not enabled!");
-        println!("  Build with: cargo run --example gpu_benchmark --features gpu-acceleration\n");
-    }
-    
     let mut results = Vec::new();
     
     for &particle_count in &config.particle_counts {
@@ -229,27 +221,32 @@ async fn run_benchmarks(config: BenchmarkConfig) {
         );
         let cpu_avg = cpu_total / (config.num_iterations as u32);
         
-        #[cfg(feature = "gpu-acceleration")]
-        let (gpu_total, gpu_avg) = {
-            // GPU benchmark
+        // GPU benchmark - always try
+        let (gpu_total, gpu_avg, gpu_available) = {
             let gpu_total = benchmark_gpu(
                 particle_count,
                 config.num_frames,
                 config.num_iterations,
                 config.dt,
             ).await;
-            let gpu_avg = gpu_total / (config.num_iterations as u32);
-            (gpu_total, gpu_avg)
+            
+            let gpu_available = gpu_total != Duration::ZERO;
+            let gpu_avg = if gpu_available {
+                gpu_total / (config.num_iterations as u32)
+            } else {
+                Duration::ZERO
+            };
+            
+            (gpu_total, gpu_avg, gpu_available)
         };
         
         results.push(BenchmarkResult {
             particle_count,
             cpu_avg_time: cpu_avg / config.num_frames as u32,
             cpu_total_time: cpu_total,
-            #[cfg(feature = "gpu-acceleration")]
             gpu_avg_time: gpu_avg / config.num_frames as u32,
-            #[cfg(feature = "gpu-acceleration")]
             gpu_total_time: gpu_total,
+            gpu_available,
         });
     }
     
