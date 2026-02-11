@@ -18,6 +18,7 @@ workspace = true
 default = ["dim3"]
 dim3 = []
 parallel = ["rayon"]
+gpu-acceleration = ["wgpu", "bytemuck", "encase", "futures"]
 rapier = ["parry", "rapier3d"]
 sampling = ["rapier"]
 rapier-testbed = ["rapier", "rapier_testbed3d", "graphics"]
@@ -46,6 +47,12 @@ rapier_testbed3d = { version = "0.23.1", optional = true }
 
 bevy_egui = { version = "0.31", features = ["immutable_ctx"], optional = true }
 bitflags = "2.6.0"
+
+# GPU acceleration dependencies
+wgpu = { version = "23", optional = true }
+bytemuck = { version = "1.14", features = ["derive"], optional = true }
+encase = { version = "0.10", optional = true }
+futures = { version = "0.3", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bevy = { version = "0.15", default-features = false, features = [
