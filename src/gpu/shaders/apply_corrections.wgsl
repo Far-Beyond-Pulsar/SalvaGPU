@@ -67,6 +67,7 @@ fn apply_velocity_corrections(@builtin(global_invocation_id) global_id: vec3<u32
 
 // Apply position corrections after pressure solve
 // CPU equivalent: position += (velocity + velocity_change) * dt
+// velocity_change here comes from velocity_corrections buffer (written by pressure solve)
 @compute @workgroup_size(256)
 fn apply_position_corrections(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let idx = global_id.x;
@@ -77,7 +78,7 @@ fn apply_position_corrections(@builtin(global_invocation_id) global_id: vec3<u32
     
     var particle = particles[idx];
     let vel = particle.velocity.xyz;
-    let delta_v = particle.velocity_change.xyz;
+    let delta_v = velocity_corrections[idx].xyz;  // Read from pressure solve corrections
     
     // Apply position correction: pos += (v + dv) * dt
     particle.position = vec4<f32>(particle.position.xyz + (vel + delta_v) * params.dt, 0.0);
