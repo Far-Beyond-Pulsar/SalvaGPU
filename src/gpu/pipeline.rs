@@ -16,6 +16,9 @@ pub struct GpuPipelines {
     pub dfsph_correct_density_pipeline: ComputePipeline,
     pub dfsph_compute_divergence_pipeline: ComputePipeline,
     pub dfsph_correct_divergence_pipeline: ComputePipeline,
+    pub apply_velocity_corrections_pipeline: ComputePipeline,
+    pub apply_position_corrections_pipeline: ComputePipeline,
+    pub clear_velocity_corrections_pipeline: ComputePipeline,
     pub forces_pipeline: ComputePipeline,
     pub integrate_pipeline: ComputePipeline,
 }
@@ -34,6 +37,12 @@ impl GpuPipelines {
         let dfsph_compute_divergence_pipeline = Self::create_dfsph_pipeline(device, dfsph_shader, "compute_divergence", "DFSPH Compute Divergence");
         let dfsph_correct_divergence_pipeline = Self::create_dfsph_pipeline(device, dfsph_shader, "correct_divergence_error", "DFSPH Correct Divergence");
         
+        // Correction application pipelines
+        let corrections_shader = include_str!("shaders/apply_corrections.wgsl");
+        let apply_velocity_corrections_pipeline = Self::create_apply_corrections_pipeline(device, corrections_shader, "apply_velocity_corrections", "Apply Velocity Corrections");
+        let apply_position_corrections_pipeline = Self::create_apply_corrections_pipeline(device, corrections_shader, "apply_position_corrections", "Apply Position Corrections");
+        let clear_velocity_corrections_pipeline = Self::create_apply_corrections_pipeline(device, corrections_shader, "clear_velocity_corrections", "Clear Velocity Corrections");
+        
         let forces_pipeline = Self::create_forces_pipeline(device);
         let integrate_pipeline = Self::create_integrate_pipeline(device);
 
@@ -45,6 +54,9 @@ impl GpuPipelines {
             dfsph_correct_density_pipeline,
             dfsph_compute_divergence_pipeline,
             dfsph_correct_divergence_pipeline,
+            apply_velocity_corrections_pipeline,
+            apply_position_corrections_pipeline,
+            clear_velocity_corrections_pipeline,
             forces_pipeline,
             integrate_pipeline,
         }
@@ -438,6 +450,67 @@ impl GpuPipelines {
             layout: Some(&pipeline_layout),
             module: &shader,
             entry_point: Some("integrate"),
+            compilation_options: Default::default(),
+            cache: None,
+        })
+    }
+    
+    fn create_apply_corrections_pipeline(device: &Device, shader_code: &str, entry_point: &str, label: &str) -> ComputePipeline {
+        let shader = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some(label),
+            source: ShaderSource::Wgsl(shader_code.into()),
+        });
+        
+        let bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some(&format!("{} Bind Group Layout", label)),
+            entries: &[
+                // @binding(0) particles: array<Particle> (read_write)
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // @binding(1) velocity_corrections: array<vec4<f32>> (read)
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // @binding(2) params: SimulationParams (uniform)
+                BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        
+        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some(&format!("{} Pipeline Layout", label)),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        
+        device.create_compute_pipeline(&ComputePipelineDescriptor {
+            label: Some(label),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some(entry_point),
             compilation_options: Default::default(),
             cache: None,
         })

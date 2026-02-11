@@ -258,7 +258,7 @@ impl GpuFluidSolver {
                 pass.dispatch_workgroups(num_workgroups, 1, 1);
             }
             
-            // Correct divergence error
+            // Correct divergence error (computes velocity_change)
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some(&format!("Correct Divergence Iter {}", iter)),
@@ -272,6 +272,66 @@ impl GpuFluidSolver {
             
             // TODO: Check convergence and break early if error < max_divergence_error
             // For now, just do fixed iterations
+        }
+        
+        // Step 2.5: Apply velocity corrections from divergence solve
+        // This matches CPU update_velocities(): velocity += velocity_change
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Apply Velocity Corrections"),
+                timestamp_writes: None,
+            });
+            let bind_group = self.context.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Apply Velocity Corrections Bind Group"),
+                layout: &self.pipelines.apply_velocity_corrections_pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.particles_buffer.buffer().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.velocity_corrections_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.params_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+            pass.set_pipeline(&self.pipelines.apply_velocity_corrections_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(num_workgroups, 1, 1);
+        }
+        
+        // Step 2.6: Clear velocity corrections for next iteration
+        // This matches CPU: velocity_changes.fill(0.0)
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Clear Velocity Corrections"),
+                timestamp_writes: None,
+            });
+            let bind_group = self.context.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Clear Velocity Corrections Bind Group"),
+                layout: &self.pipelines.clear_velocity_corrections_pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.particles_buffer.buffer().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.velocity_corrections_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.params_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+            pass.set_pipeline(&self.pipelines.clear_velocity_corrections_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(num_workgroups, 1, 1);
         }
         
         // Step 3: Apply non-pressure forces (viscosity, surface tension, gravity)
@@ -356,6 +416,36 @@ impl GpuFluidSolver {
             
             // TODO: Check convergence and break early if error < max_density_error
             // For now, just do fixed iterations
+        }
+        
+        // Step 5.5: Apply position corrections from pressure solve
+        // This matches CPU update_positions(): position += (velocity + velocity_change) * dt
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Apply Position Corrections"),
+                timestamp_writes: None,
+            });
+            let bind_group = self.context.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Apply Position Corrections Bind Group"),
+                layout: &self.pipelines.apply_position_corrections_pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.particles_buffer.buffer().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.velocity_corrections_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.params_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+            pass.set_pipeline(&self.pipelines.apply_position_corrections_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(num_workgroups, 1, 1);
         }
         
         // Submit all commands
