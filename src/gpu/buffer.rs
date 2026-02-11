@@ -2,6 +2,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use std::collections::HashSet;
+use std::mem::size_of;
 use wgpu::{
     Buffer, BufferAddress, BufferDescriptor, BufferUsages, Device, Queue, util::DeviceExt,
 };
@@ -23,7 +24,7 @@ pub struct DeltaBufferManager<T: Pod> {
 impl<T: Pod + Zeroable> DeltaBufferManager<T> {
     /// Creates a new delta buffer manager with the given capacity
     pub fn new(device: &Device, capacity: usize, usage: BufferUsages, label: &str) -> Self {
-        let buffer_size = (capacity * std::mem::size_of::<T>()) as BufferAddress;
+        let buffer_size = (capacity * size_of::<T>()) as BufferAddress;
         
         let buffer = device.create_buffer(&BufferDescriptor {
             label: Some(label),
@@ -62,7 +63,7 @@ impl<T: Pod + Zeroable> DeltaBufferManager<T> {
     pub fn update(&mut self, index: usize, value: T) {
         if index < self.capacity {
             self.cpu_data[index] = value;
-            self.dirty_indices.insert(index);
+            let _ = self.dirty_indices.insert(index);
         }
     }
 
@@ -74,7 +75,7 @@ impl<T: Pod + Zeroable> DeltaBufferManager<T> {
         if count > 0 {
             self.cpu_data[start_index..end_index].copy_from_slice(&values[..count]);
             for i in start_index..end_index {
-                self.dirty_indices.insert(i);
+                let _ = self.dirty_indices.insert(i);
             }
         }
     }
@@ -118,19 +119,19 @@ impl<T: Pod + Zeroable> DeltaBufferManager<T> {
 
     /// Uploads a contiguous range to the GPU
     fn upload_range(&self, queue: &Queue, start: usize, end: usize) {
-        let offset = (start * std::mem::size_of::<T>()) as BufferAddress;
+        let offset = (start * size_of::<T>()) as BufferAddress;
         let data = &self.cpu_data[start..end];
         queue.write_buffer(&self.buffer, offset, bytemuck::cast_slice(data));
     }
 
     /// Resizes the buffer (requires full reallocation)
-    pub fn resize(&mut self, device: &Device, new_capacity: usize, usage: BufferUsages) {
+    pub fn resize(&mut self, device: &Device, new_capacity: usize, usage: BufferUsages, label: &str) {
         if new_capacity != self.capacity {
             self.cpu_data.resize(new_capacity, T::zeroed());
             
-            let buffer_size = (new_capacity * std::mem::size_of::<T>()) as BufferAddress;
+            let buffer_size = (new_capacity * size_of::<T>()) as BufferAddress;
             self.buffer = device.create_buffer(&BufferDescriptor {
-                label: self.buffer.label(),
+                label: Some(label),
                 size: buffer_size,
                 usage: usage | BufferUsages::COPY_DST,
                 mapped_at_creation: false,
@@ -178,7 +179,7 @@ pub struct ReadbackBuffer<T: Pod> {
 impl<T: Pod> ReadbackBuffer<T> {
     /// Creates a new readback buffer
     pub fn new(device: &Device, capacity: usize, label: &str) -> Self {
-        let buffer_size = (capacity * std::mem::size_of::<T>()) as BufferAddress;
+        let buffer_size = (capacity * size_of::<T>()) as BufferAddress;
         
         let buffer = device.create_buffer(&BufferDescriptor {
             label: Some(label),
@@ -205,7 +206,7 @@ impl<T: Pod> ReadbackBuffer<T> {
         let (sender, receiver) = futures::channel::oneshot::channel();
         
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            sender.send(result).ok();
+            let _ = sender.send(result);
         });
 
         receiver.await

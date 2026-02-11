@@ -8,7 +8,7 @@ use crate::gpu::{
 };
 use crate::math::{Real, Vector};
 use crate::object::Fluid;
-use bytemuck::{Pod, Zeroable};
+use std::mem::size_of;
 use wgpu::{BufferUsages, CommandEncoderDescriptor, util::DeviceExt};
 
 /// GPU-resident fluid solver that keeps all simulation state on the GPU
@@ -106,11 +106,13 @@ impl GpuFluidSolver {
                 &self.context.device,
                 gpu_particles.len(),
                 BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+                "Particles Buffer",
             );
             self.particle_indices_buffer.resize(
                 &self.context.device,
                 gpu_particles.len(),
                 BufferUsages::STORAGE,
+                "Particle Indices Buffer",
             );
         }
         
@@ -294,7 +296,7 @@ impl GpuFluidSolver {
         }
         
         // Submit commands
-        self.context.queue.submit(Some(encoder.finish()));
+        let _ = self.context.queue.submit(Some(encoder.finish()));
     }
     
     /// Reads particle data back from GPU (expensive - use sparingly!)
@@ -316,10 +318,10 @@ impl GpuFluidSolver {
             0,
             readback.buffer(),
             0,
-            (self.num_particles * std::mem::size_of::<GpuParticle>()) as u64,
+            (self.num_particles * size_of::<GpuParticle>()) as u64,
         );
         
-        self.context.queue.submit(Some(encoder.finish()));
+        let _ = self.context.queue.submit(Some(encoder.finish()));
         
         readback.read().await
     }

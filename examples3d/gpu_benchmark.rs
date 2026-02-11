@@ -1,0 +1,287 @@
+use instant::Instant;
+use nalgebra::{Point3, Vector3};
+use salva3d::object::{Fluid, FluidHandle};
+use salva3d::solver::DFSPHSolver;
+use salva3d::LiquidWorld;
+use std::time::Duration;
+
+#[cfg(feature = "gpu-acceleration")]
+use salva3d::gpu::GpuFluidSolver;
+
+/// Benchmark configuration
+struct BenchmarkConfig {
+    particle_counts: Vec<usize>,
+    num_frames: usize,
+    num_iterations: usize,
+    dt: f32,
+}
+
+/// Results for a single benchmark run
+struct BenchmarkResult {
+    particle_count: usize,
+    cpu_avg_time: Duration,
+    cpu_total_time: Duration,
+    #[cfg(feature = "gpu-acceleration")]
+    gpu_avg_time: Duration,
+    #[cfg(feature = "gpu-acceleration")]
+    gpu_total_time: Duration,
+}
+
+impl BenchmarkResult {
+    fn print(&self) {
+        println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        println!("  Particle Count: {}", self.particle_count);
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        
+        println!("\n  CPU Performance:");
+        println!("    Average frame time: {:.2} ms", self.cpu_avg_time.as_secs_f32() * 1000.0);
+        println!("    Total time: {:.2} s", self.cpu_total_time.as_secs_f32());
+        println!("    FPS: {:.1}", 1.0 / self.cpu_avg_time.as_secs_f32());
+        
+        #[cfg(feature = "gpu-acceleration")]
+        {
+            println!("\n  GPU Performance:");
+            println!("    Average frame time: {:.2} ms", self.gpu_avg_time.as_secs_f32() * 1000.0);
+            println!("    Total time: {:.2} s", self.gpu_total_time.as_secs_f32());
+            println!("    FPS: {:.1}", 1.0 / self.gpu_avg_time.as_secs_f32());
+            
+            let speedup = self.cpu_avg_time.as_secs_f32() / self.gpu_avg_time.as_secs_f32();
+            println!("\n  Speedup: {:.2}x", speedup);
+            
+            if speedup > 1.0 {
+                println!("  GPU is {:.1}% faster", (speedup - 1.0) * 100.0);
+            } else {
+                println!("  CPU is {:.1}% faster", (1.0 / speedup - 1.0) * 100.0);
+            }
+        }
+        
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    }
+}
+
+/// Creates a 3D fluid with particles in a grid
+fn create_fluid(particle_count: usize, particle_radius: f32) -> Fluid {
+    let particles_per_side = (particle_count as f32).powf(1.0 / 3.0) as usize;
+    let spacing = particle_radius * 2.1;
+    
+    let mut positions = Vec::new();
+    let mut velocities = Vec::new();
+    
+    for i in 0..particles_per_side {
+        for j in 0..particles_per_side {
+            for k in 0..particles_per_side {
+                if positions.len() >= particle_count {
+                    break;
+                }
+                
+                let x = -1.0 + (i as f32) * spacing;
+                let y = -1.0 + (j as f32) * spacing;
+                let z = -1.0 + (k as f32) * spacing;
+                
+                positions.push(Point3::new(x, y, z));
+                velocities.push(Vector3::new(0.0, 0.0, 0.0));
+            }
+            
+            if positions.len() >= particle_count {
+                break;
+            }
+        }
+        
+        if positions.len() >= particle_count {
+            break;
+        }
+    }
+    
+    let mut fluid = Fluid::new(positions, particle_radius, 1.0);
+    fluid.velocities = velocities;
+    fluid
+}
+
+/// Runs CPU benchmark
+fn benchmark_cpu(
+    particle_count: usize,
+    num_frames: usize,
+    num_iterations: usize,
+    dt: f32,
+) -> Duration {
+    let particle_radius = 0.025;
+    let smoothing_factor = 2.0;
+    
+    let mut total_duration = Duration::ZERO;
+    
+    println!("  Running CPU benchmark ({} particles, {} iterations)...", 
+             particle_count, num_iterations);
+    
+    for iteration in 0..num_iterations {
+        print!("    Iteration {}/{}... ", iteration + 1, num_iterations);
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+        
+        // Create world and fluid
+        let mut world = LiquidWorld::new(
+            DFSPHSolver::new(),
+            particle_radius,
+            smoothing_factor,
+        );
+        
+        let fluid = create_fluid(particle_count, particle_radius);
+        world.add_fluid(fluid);
+        
+        let gravity = Vector3::new(0.0, -9.81, 0.0);
+        
+        // Run simulation
+        let start = Instant::now();
+        
+        for _ in 0..num_frames {
+            world.step(dt, &gravity);
+        }
+        
+        let duration = start.elapsed();
+        total_duration += duration;
+        
+        println!("{:.2} s", duration.as_secs_f32());
+    }
+    
+    total_duration
+}
+
+/// Runs GPU benchmark
+#[cfg(feature = "gpu-acceleration")]
+async fn benchmark_gpu(
+    particle_count: usize,
+    num_frames: usize,
+    num_iterations: usize,
+    dt: f32,
+) -> Duration {
+    let particle_radius = 0.025;
+    
+    let mut total_duration = Duration::ZERO;
+    
+    println!("  Running GPU benchmark ({} particles, {} iterations)...", 
+             particle_count, num_iterations);
+    
+    for iteration in 0..num_iterations {
+        print!("    Iteration {}/{}... ", iteration + 1, num_iterations);
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+        
+        // Create GPU solver
+        let mut gpu_solver = match GpuFluidSolver::new(particle_count).await {
+            Ok(solver) => solver,
+            Err(e) => {
+                println!("Failed to create GPU solver: {}", e);
+                return Duration::ZERO;
+            }
+        };
+        
+        // Create fluid data
+        let fluid = create_fluid(particle_count, particle_radius);
+        let fluids = vec![fluid];
+        
+        // Initialize GPU solver
+        gpu_solver.init_from_fluids(&fluids);
+        
+        let gravity = Vector3::new(0.0, -9.81, 0.0);
+        
+        // Run simulation
+        let start = Instant::now();
+        
+        for _ in 0..num_frames {
+            gpu_solver.step(dt, &gravity);
+        }
+        
+        // Ensure GPU work is complete
+        gpu_solver.context().device.poll(wgpu::Maintain::Wait);
+        
+        let duration = start.elapsed();
+        total_duration += duration;
+        
+        println!("{:.2} s", duration.as_secs_f32());
+    }
+    
+    total_duration
+}
+
+/// Main benchmark function
+async fn run_benchmarks(config: BenchmarkConfig) {
+    println!("\n╔════════════════════════════════════════════════════╗");
+    println!("║     Salva 3D GPU vs CPU Performance Benchmark     ║");
+    println!("╚════════════════════════════════════════════════════╝\n");
+    
+    println!("Configuration:");
+    println!("  Frames per run: {}", config.num_frames);
+    println!("  Iterations: {}", config.num_iterations);
+    println!("  Time step: {} s", config.dt);
+    println!("  Particle counts: {:?}", config.particle_counts);
+    
+    #[cfg(not(feature = "gpu-acceleration"))]
+    {
+        println!("\n⚠ WARNING: GPU acceleration not enabled!");
+        println!("  Build with: cargo run --example gpu_benchmark --features gpu-acceleration\n");
+    }
+    
+    let mut results = Vec::new();
+    
+    for &particle_count in &config.particle_counts {
+        println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        println!("Testing with {} particles", particle_count);
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+        
+        // CPU benchmark
+        let cpu_total = benchmark_cpu(
+            particle_count,
+            config.num_frames,
+            config.num_iterations,
+            config.dt,
+        );
+        let cpu_avg = cpu_total / (config.num_iterations as u32);
+        
+        #[cfg(feature = "gpu-acceleration")]
+        let (gpu_total, gpu_avg) = {
+            // GPU benchmark
+            let gpu_total = benchmark_gpu(
+                particle_count,
+                config.num_frames,
+                config.num_iterations,
+                config.dt,
+            ).await;
+            let gpu_avg = gpu_total / (config.num_iterations as u32);
+            (gpu_total, gpu_avg)
+        };
+        
+        results.push(BenchmarkResult {
+            particle_count,
+            cpu_avg_time: cpu_avg / config.num_frames as u32,
+            cpu_total_time: cpu_total,
+            #[cfg(feature = "gpu-acceleration")]
+            gpu_avg_time: gpu_avg / config.num_frames as u32,
+            #[cfg(feature = "gpu-acceleration")]
+            gpu_total_time: gpu_total,
+        });
+    }
+    
+    // Print summary
+    println!("\n\n╔════════════════════════════════════════════════════╗");
+    println!("║                  BENCHMARK RESULTS                 ║");
+    println!("╚════════════════════════════════════════════════════╝");
+    
+    for result in results {
+        result.print();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn main() {
+    let config = BenchmarkConfig {
+        particle_counts: vec![100, 500, 1000, 2500, 5000, 10000],
+        num_frames: 100,
+        num_iterations: 10,
+        dt: 0.016, // ~60 FPS
+    };
+    
+    // Use pollster to run async code
+    pollster::block_on(run_benchmarks(config));
+}
+
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    println!("This example is not supported on WASM (requires high-precision timing)");
+}
