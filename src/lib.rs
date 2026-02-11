@@ -85,6 +85,8 @@ macro_rules! par_reduce_sum {
 pub mod counters;
 pub mod coupling;
 pub mod geometry;
+#[cfg(feature = "gpu-acceleration")]
+pub mod gpu;
 pub mod helper;
 pub mod integrations;
 pub mod kernel;

@@ -1,0 +1,19 @@
+PROPER DFSPH STEP IMPLEMENTATION MATCHING CPU:
+
+1. Compute alpha (stiffness factors) - once per step
+2. Divergence solve with iterations (velocity correction)
+3. Apply velocity changes
+4. Predict advection (apply forces + gravity)
+5. Integrate (update positions)
+6. Pressure solve with iterations (density correction)
+7. Update positions based on velocity corrections
+
+Current GPU implementation is WRONG - it does:
+- spatial hash
+- density
+- forces
+- integrate
+
+This doesn't match DFSPH at all!
+
+See dfsph_solver.rs::step() lines 667-708 for correct order
